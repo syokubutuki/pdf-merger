@@ -16,12 +16,23 @@
 - 複数ファイルを一括選択可能
 
 ## 現在の状態
-- app/page.tsx：メインページ実装済み
-- app/layout.tsx：日本語設定済み
-- GitHubリポジトリ：未作成
-- Vercel公開：未実施
+- app/page.tsx：実装・動作確認済み
+- app/layout.tsx：SEO対応済み
+- app/robots.ts：robots.txt 自動生成
+- app/sitemap.ts：sitemap.xml 自動生成
+- GitHub：https://github.com/syokubutuki/pdf-merger
+- Vercel：公開済み　https://pdf-merger-rouge.vercel.app
 
-## 次のステップ
-- 動作確認
-- GitHubにアップロード
-- Vercelで公開
+## SEO対応（実施済み）
+- title・description・keywords・OGP・Twitter Card を layout.tsx に設定
+- robots.txt・sitemap.xml を Next.js の Route Handler で自動生成
+- Google Search Console にサイト登録済み・所有権確認済み
+  - verification code は layout.tsx の `verification.google` に記載
+
+## デプロイ手順
+```
+git add .
+git commit -m "変更内容のメモ"
+git push
+```
+GitHubにpushするとVercelに自動反映される。

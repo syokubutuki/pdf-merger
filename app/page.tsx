@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import { PDFDocument } from 'pdf-lib';
 
 type PdfFile = {
@@ -12,20 +12,32 @@ type PdfFile = {
 export default function Home() {
   const [files, setFiles] = useState<PdfFile[]>([]);
   const [merging, setMerging] = useState(false);
-  const idRef = { current: 0 };
+  const [isDragging, setIsDragging] = useState(false);
+  const idRef = useRef(0);
 
-  const handleFileChange = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const selected = Array.from(e.target.files ?? []);
+  const addFiles = useCallback(async (selected: File[]) => {
+    const pdfFiles = selected.filter(f => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf'));
+    if (pdfFiles.length === 0) return;
     const loaded: PdfFile[] = await Promise.all(
-      selected.map(async (file) => ({
+      pdfFiles.map(async (file) => ({
         id: idRef.current++,
         name: file.name,
         data: await file.arrayBuffer(),
       }))
     );
     setFiles(prev => [...prev, ...loaded]);
-    e.target.value = '';
   }, []);
+
+  const handleFileChange = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    await addFiles(Array.from(e.target.files ?? []));
+    e.target.value = '';
+  }, [addFiles]);
+
+  const handleDrop = useCallback(async (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    await addFiles(Array.from(e.dataTransfer.files));
+  }, [addFiles]);
 
   const removeFile = (id: number) => {
     setFiles(prev => prev.filter(f => f.id !== id));
@@ -81,9 +93,20 @@ export default function Home() {
         </div>
 
         {/* ファイル選択 */}
-        <label className="flex items-center justify-center w-full h-32 border-2 border-dashed border-gray-300 rounded-2xl cursor-pointer hover:border-blue-400 hover:bg-blue-50 transition-colors">
+        <label
+          onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+          onDragLeave={() => setIsDragging(false)}
+          onDrop={handleDrop}
+          className={`flex items-center justify-center w-full h-32 border-2 border-dashed rounded-2xl cursor-pointer transition-colors ${
+            isDragging
+              ? 'border-blue-400 bg-blue-50'
+              : 'border-gray-300 hover:border-blue-400 hover:bg-blue-50'
+          }`}
+        >
           <div className="text-center">
-            <p className="text-gray-500">クリックしてPDFを選択</p>
+            <p className="text-gray-500">
+              {isDragging ? 'ここにドロップ' : 'クリックまたはドラッグ&ドロップでPDFを選択'}
+            </p>
             <p className="text-xs text-gray-400 mt-1">複数選択可</p>
           </div>
           <input type="file" accept=".pdf" multiple onChange={handleFileChange} className="hidden" />
