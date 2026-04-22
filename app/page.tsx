@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, DragEvent } from 'react';
 import { PDFDocument } from 'pdf-lib';
 
 type PdfFile = {
@@ -13,6 +13,8 @@ export default function Home() {
   const [files, setFiles] = useState<PdfFile[]>([]);
   const [merging, setMerging] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
   const idRef = useRef(0);
 
   const addFiles = useCallback(async (selected: File[]) => {
@@ -36,8 +38,9 @@ export default function Home() {
   const handleDrop = useCallback(async (e: React.DragEvent) => {
     e.preventDefault();
     setIsDragging(false);
+    if (dragIndex !== null) return; // リスト内並び替え中はファイル追加しない
     await addFiles(Array.from(e.dataTransfer.files));
-  }, [addFiles]);
+  }, [addFiles, dragIndex]);
 
   const removeFile = (id: number) => {
     setFiles(prev => prev.filter(f => f.id !== id));
@@ -59,6 +62,58 @@ export default function Home() {
       [arr[index], arr[index + 1]] = [arr[index + 1], arr[index]];
       return arr;
     });
+  };
+
+  // --- ドラッグ&ドロップ並び替え ---
+  const handleDragStart = (e: DragEvent, index: number) => {
+    setDragIndex(index);
+    e.dataTransfer.effectAllowed = 'move';
+  };
+
+  const handleDragOver = (e: DragEvent, index: number) => {
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = 'move';
+    setDragOverIndex(index);
+  };
+
+  const handleDropReorder = (e: DragEvent, dropIndex: number) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (dragIndex === null || dragIndex === dropIndex) {
+      setDragIndex(null);
+      setDragOverIndex(null);
+      return;
+    }
+    setFiles(prev => {
+      const arr = [...prev];
+      const [moved] = arr.splice(dragIndex, 1);
+      arr.splice(dropIndex, 0, moved);
+      return arr;
+    });
+    setDragIndex(null);
+    setDragOverIndex(null);
+  };
+
+  const handleDragEnd = () => {
+    setDragIndex(null);
+    setDragOverIndex(null);
+  };
+
+  // --- ソート ---
+  const sortByName = (asc: boolean) => {
+    setFiles(prev => [...prev].sort((a, b) => {
+      const cmp = a.name.localeCompare(b.name, 'ja');
+      return asc ? cmp : -cmp;
+    }));
+  };
+
+  const reverseOrder = () => {
+    setFiles(prev => [...prev].reverse());
+  };
+
+  const clearAll = () => {
+    setFiles([]);
   };
 
   const merge = async () => {
@@ -115,11 +170,30 @@ export default function Home() {
         {/* ファイル一覧 */}
         {files.length > 0 && (
           <div className="bg-white rounded-2xl shadow p-4 space-y-2">
-            <p className="text-sm font-medium text-gray-600 mb-3">
-              結合順序（上から順に結合されます）
-            </p>
+            <div className="flex items-center justify-between mb-3">
+              <p className="text-sm font-medium text-gray-600">
+                結合順序（上から順に結合されます）
+              </p>
+              <div className="flex gap-1">
+                <button onClick={() => sortByName(true)} className="px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-500 hover:bg-gray-200 cursor-pointer">名前昇順</button>
+                <button onClick={() => sortByName(false)} className="px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-500 hover:bg-gray-200 cursor-pointer">名前降順</button>
+                <button onClick={reverseOrder} className="px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-500 hover:bg-gray-200 cursor-pointer">逆順</button>
+                <button onClick={clearAll} className="px-2 py-0.5 text-xs rounded-full bg-gray-100 text-red-400 hover:bg-red-50 cursor-pointer">全削除</button>
+              </div>
+            </div>
             {files.map((file, index) => (
-              <div key={file.id} className="flex items-center gap-2 p-3 bg-gray-50 rounded-xl">
+              <div
+                key={file.id}
+                draggable
+                onDragStart={(e) => handleDragStart(e, index)}
+                onDragOver={(e) => handleDragOver(e, index)}
+                onDrop={(e) => handleDropReorder(e, index)}
+                onDragEnd={handleDragEnd}
+                className={`flex items-center gap-2 p-3 bg-gray-50 rounded-xl transition-opacity ${
+                  dragIndex === index ? 'opacity-50' : ''
+                } ${dragOverIndex === index && dragIndex !== null && dragIndex !== index ? 'border-t-2 border-blue-400' : ''}`}
+              >
+                <span className="cursor-grab active:cursor-grabbing text-gray-300 hover:text-gray-500 select-none" title="ドラッグで並び替え">⠿</span>
                 <div className="flex flex-col gap-1">
                   <button
                     onClick={() => moveUp(index)}
