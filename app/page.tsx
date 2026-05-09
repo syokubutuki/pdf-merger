@@ -9,12 +9,59 @@ type PdfFile = {
   data: ArrayBuffer;
 };
 
+type PasswordRequest = {
+  fileName: string;
+  data: ArrayBuffer;
+  resolve: (data: ArrayBuffer | null) => void;
+};
+
+async function convertToImagePdf(data: ArrayBuffer, password: string): Promise<ArrayBuffer> {
+  const pdfjsLib = await import('pdfjs-dist');
+  pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.mjs`;
+
+  const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(data), password }).promise;
+  const newDoc = await PDFDocument.create();
+
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i);
+    const origViewport = page.getViewport({ scale: 1 });
+    const renderViewport = page.getViewport({ scale: 2 });
+
+    const canvas = document.createElement('canvas');
+    canvas.width = renderViewport.width;
+    canvas.height = renderViewport.height;
+    const ctx = canvas.getContext('2d')!;
+    await page.render({ canvasContext: ctx, viewport: renderViewport, canvas }).promise;
+
+    const jpegBlob = await new Promise<Blob>((resolve) =>
+      canvas.toBlob((blob) => resolve(blob!), 'image/jpeg', 0.92)
+    );
+    const jpegBytes = new Uint8Array(await jpegBlob.arrayBuffer());
+    const jpegImage = await newDoc.embedJpg(jpegBytes);
+
+    const newPage = newDoc.addPage([origViewport.width, origViewport.height]);
+    newPage.drawImage(jpegImage, {
+      x: 0, y: 0,
+      width: origViewport.width,
+      height: origViewport.height,
+    });
+  }
+
+  const bytes = await newDoc.save();
+  return bytes.buffer as ArrayBuffer;
+}
+
 export default function Home() {
   const [files, setFiles] = useState<PdfFile[]>([]);
   const [merging, setMerging] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+  const [passwordRequest, setPasswordRequest] = useState<PasswordRequest | null>(null);
+  const [passwordInput, setPasswordInput] = useState('');
+  const [passwordError, setPasswordError] = useState('');
+  const [converting, setConverting] = useState(false);
+  const [mergeError, setMergeError] = useState('');
   const idRef = useRef(0);
 
   const addFiles = useCallback(async (selected: File[]) => {
@@ -38,7 +85,7 @@ export default function Home() {
   const handleDrop = useCallback(async (e: React.DragEvent) => {
     e.preventDefault();
     setIsDragging(false);
-    if (dragIndex !== null) return; // リスト内並び替え中はファイル追加しない
+    if (dragIndex !== null) return;
     await addFiles(Array.from(e.dataTransfer.files));
   }, [addFiles, dragIndex]);
 
@@ -116,23 +163,85 @@ export default function Home() {
     setFiles([]);
   };
 
+  // --- パスワードダイアログ ---
+  const requestPassword = (fileName: string, data: ArrayBuffer): Promise<ArrayBuffer | null> => {
+    return new Promise((resolve) => {
+      setPasswordRequest({ fileName, data, resolve });
+      setPasswordInput('');
+      setPasswordError('');
+    });
+  };
+
+  const handlePasswordSubmit = async () => {
+    if (!passwordRequest) return;
+    setConverting(true);
+    try {
+      const imageData = await convertToImagePdf(passwordRequest.data, passwordInput);
+      passwordRequest.resolve(imageData);
+      setPasswordRequest(null);
+      setPasswordInput('');
+      setPasswordError('');
+    } catch {
+      setPasswordError('パスワードが正しくないか、ファイルを処理できませんでした');
+    }
+    setConverting(false);
+  };
+
+  const handlePasswordCancel = () => {
+    if (!passwordRequest) return;
+    passwordRequest.resolve(null);
+    setPasswordRequest(null);
+    setPasswordInput('');
+    setPasswordError('');
+  };
+
+  // --- 結合 ---
   const merge = async () => {
     if (files.length < 2) return;
     setMerging(true);
-    const merged = await PDFDocument.create();
-    for (const file of files) {
-      const doc = await PDFDocument.load(file.data);
-      const pages = await merged.copyPages(doc, doc.getPageIndices());
-      pages.forEach(p => merged.addPage(p));
+    setMergeError('');
+
+    try {
+      const merged = await PDFDocument.create();
+
+      for (const file of files) {
+        let fileData = file.data;
+
+        // pdf-libで読み込みを試みる
+        let needsConversion = false;
+        try {
+          await PDFDocument.load(fileData);
+        } catch {
+          needsConversion = true;
+        }
+
+        if (needsConversion) {
+          const convertedData = await requestPassword(file.name, file.data);
+          if (convertedData === null) {
+            // キャンセルされた
+            setMerging(false);
+            return;
+          }
+          fileData = convertedData;
+        }
+
+        const doc = await PDFDocument.load(fileData);
+        const pages = await merged.copyPages(doc, doc.getPageIndices());
+        pages.forEach(p => merged.addPage(p));
+      }
+
+      const bytes = await merged.save();
+      const blob = new Blob([bytes.buffer as ArrayBuffer], { type: 'application/pdf' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'merged.pdf';
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      setMergeError('結合中にエラーが発生しました');
     }
-    const bytes = await merged.save();
-    const blob = new Blob([bytes.buffer as ArrayBuffer], { type: 'application/pdf' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'merged.pdf';
-    a.click();
-    URL.revokeObjectURL(url);
+
     setMerging(false);
   };
 
@@ -217,6 +326,11 @@ export default function Home() {
           </div>
         )}
 
+        {/* エラー表示 */}
+        {mergeError && (
+          <p className="text-center text-sm text-red-500">{mergeError}</p>
+        )}
+
         {/* 結合ボタン */}
         <button
           onClick={merge}
@@ -233,6 +347,52 @@ export default function Home() {
         )}
 
       </div>
+
+      {/* パスワード入力ダイアログ */}
+      {passwordRequest && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-xl p-6 w-full max-w-sm space-y-4">
+            <h2 className="text-lg font-bold text-gray-800">パスワード付きPDF</h2>
+            <p className="text-sm text-gray-500 break-all">
+              <span className="font-medium text-gray-700">{passwordRequest.fileName}</span>
+              {' '}はパスワードで保護されています。パスワードを入力してください。
+            </p>
+            <p className="text-xs text-gray-400">
+              ※ 画像PDFに変換して結合します（テキスト選択不可になります）
+            </p>
+            <input
+              type="password"
+              value={passwordInput}
+              onChange={(e) => setPasswordInput(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter' && !converting) handlePasswordSubmit(); }}
+              placeholder="パスワード"
+              autoFocus
+              disabled={converting}
+              className="w-full px-4 py-2 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 disabled:bg-gray-100"
+            />
+            {passwordError && (
+              <p className="text-sm text-red-500">{passwordError}</p>
+            )}
+            <div className="flex gap-2">
+              <button
+                onClick={handlePasswordCancel}
+                disabled={converting}
+                className="flex-1 py-2 rounded-xl border border-gray-300 text-gray-600 text-sm hover:bg-gray-50 cursor-pointer disabled:opacity-50"
+              >
+                キャンセル
+              </button>
+              <button
+                onClick={handlePasswordSubmit}
+                disabled={converting || !passwordInput}
+                className="flex-1 py-2 rounded-xl bg-blue-600 text-white text-sm hover:bg-blue-700 cursor-pointer disabled:bg-gray-300 disabled:cursor-not-allowed"
+              >
+                {converting ? '変換中...' : '解除して結合'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </main>
   );
 }
