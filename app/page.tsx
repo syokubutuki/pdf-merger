@@ -15,11 +15,13 @@ type PasswordRequest = {
   resolve: (data: ArrayBuffer | null) => void;
 };
 
-async function convertToImagePdf(data: ArrayBuffer, password: string): Promise<ArrayBuffer> {
+async function convertToImagePdf(data: ArrayBuffer, password?: string): Promise<ArrayBuffer> {
   const pdfjsLib = await import('pdfjs-dist');
   pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.mjs`;
 
-  const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(data), password }).promise;
+  const loadParams: { data: Uint8Array; password?: string } = { data: new Uint8Array(data) };
+  if (password) loadParams.password = password;
+  const pdf = await pdfjsLib.getDocument(loadParams).promise;
   const newDoc = await PDFDocument.create();
 
   for (let i = 1; i <= pdf.numPages; i++) {
@@ -208,24 +210,30 @@ export default function Home() {
         let fileData = file.data;
 
         // pdf-libで読み込みを試みる
-        let needsConversion = false;
+        let loadedOk = false;
         try {
           await PDFDocument.load(fileData);
+          loadedOk = true;
         } catch {
-          needsConversion = true;
-        }
-
-        if (needsConversion) {
-          const convertedData = await requestPassword(file.name, file.data);
-          if (convertedData === null) {
-            // キャンセルされた
-            setMerging(false);
-            return;
+          // pdf-libで読めない → pdf.jsでパスワードなし読み込みを試みる
+          try {
+            fileData = await convertToImagePdf(file.data);
+          } catch (e: unknown) {
+            // パスワードが必要な場合
+            if (e instanceof Error && e.name === 'PasswordException') {
+              const convertedData = await requestPassword(file.name, file.data);
+              if (convertedData === null) {
+                setMerging(false);
+                return;
+              }
+              fileData = convertedData;
+            } else {
+              throw e;
+            }
           }
-          fileData = convertedData;
         }
 
-        const doc = await PDFDocument.load(fileData);
+        const doc = await PDFDocument.load(loadedOk ? file.data : fileData);
         const pages = await merged.copyPages(doc, doc.getPageIndices());
         pages.forEach(p => merged.addPage(p));
       }
